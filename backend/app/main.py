@@ -1,10 +1,12 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.modules.preprocessing import preprocess_image
+from app.modules.cvd_simulation import simulate_cvd
 import numpy as np
 import cv2
 import uuid
 from pathlib import Path
+from app.modules.clustering import cluster_image_colours, rebuild_image_from_clusters
 
 app = FastAPI()
 
@@ -44,4 +46,52 @@ async def upload_image(file: UploadFile = File(...)):
         "width": img_rgb.shape[1],
         "height": img_rgb.shape[0],
         "message": "Image preprocessed successfully"
+    }
+@app.post("/simulate/{session_id}")
+async def simulate_endpoint(session_id: str, cvd_type: str = "deuteranomaly", severity: int = 100):
+    original_path = RESULTS_DIR / f"{session_id}_original.png"
+    if not original_path.exists():
+        raise HTTPException(status_code=404, detail="Session not found. Upload an image first.")
+
+    img_bgr = cv2.imread(str(original_path))
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+    simulated_rgb = simulate_cvd(img_rgb, cvd_type, severity)
+
+    save_path = RESULTS_DIR / f"{session_id}_simulated_{cvd_type}.png"
+    simulated_bgr = cv2.cvtColor(simulated_rgb, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(str(save_path), simulated_bgr)
+
+    return {
+        "session_id": session_id,
+        "cvd_type": cvd_type,
+        "severity": severity,
+        "message": "Simulation complete"
+    }
+@app.post("/cluster/{session_id}")
+async def cluster_endpoint(session_id: str, k: int = 16):
+    original_path = RESULTS_DIR / f"{session_id}_original.png"
+    if not original_path.exists():
+        raise HTTPException(status_code=404, detail="Session not found. Upload an image first.")
+
+    img_bgr = cv2.imread(str(original_path))
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+    centres_rgb, pixel_labels = cluster_image_colours(img_rgb, k=k)
+
+    # Save the posterized version for visual verification
+    reconstructed = rebuild_image_from_clusters(centres_rgb, pixel_labels)
+    save_path = RESULTS_DIR / f"{session_id}_clustered_k{k}.png"
+    reconstructed_bgr = cv2.cvtColor(reconstructed, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(str(save_path), reconstructed_bgr)
+
+    # Save cluster data (centres + labels) as .npy for the next module to reuse
+    np.save(RESULTS_DIR / f"{session_id}_cluster_centres.npy", centres_rgb)
+    np.save(RESULTS_DIR / f"{session_id}_pixel_labels.npy", pixel_labels)
+
+    return {
+        "session_id": session_id,
+        "k": k,
+        "cluster_centres_rgb": centres_rgb.tolist(),
+        "message": "Clustering complete"
     }
