@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+numpy
+opencv-python
+scikit-image
+scikit-learn
+colorspacious
+matplotlib
+python-multipart
+pydantic
