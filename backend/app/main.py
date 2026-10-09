@@ -7,6 +7,7 @@ import cv2
 import uuid
 from pathlib import Path
 from app.modules.clustering import cluster_image_colours, rebuild_image_from_clusters
+from app.modules.pair_detection import detect_confusable_pairs
 
 app = FastAPI()
 
@@ -94,4 +95,21 @@ async def cluster_endpoint(session_id: str, k: int = 16):
         "k": k,
         "cluster_centres_rgb": centres_rgb.tolist(),
         "message": "Clustering complete"
+    }
+@app.post("/detect-pairs/{session_id}")
+async def detect_pairs_endpoint(session_id: str, cvd_type: str = "deuteranomaly", severity: int = 100):
+    centres_path = RESULTS_DIR / f"{session_id}_cluster_centres.npy"
+    if not centres_path.exists():
+        raise HTTPException(status_code=404, detail="Run clustering first (/cluster/{session_id}).")
+
+    cluster_centres_rgb = np.load(centres_path)
+
+    pairs = detect_confusable_pairs(cluster_centres_rgb, cvd_type, severity)
+
+    return {
+        "session_id": session_id,
+        "cvd_type": cvd_type,
+        "num_clusters": int(cluster_centres_rgb.shape[0]),
+        "num_confusable_pairs": len(pairs),
+        "confusable_pairs": pairs
     }
