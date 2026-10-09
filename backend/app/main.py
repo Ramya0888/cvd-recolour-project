@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 from app.modules.clustering import cluster_image_colours, rebuild_image_from_clusters
 from app.modules.pair_detection import detect_confusable_pairs
+from app.modules.memory_colour import classify_memory_colours
+from app.modules.remapping import compute_cluster_shifts, apply_shifts_to_image
 
 app = FastAPI()
 
@@ -112,4 +114,58 @@ async def detect_pairs_endpoint(session_id: str, cvd_type: str = "deuteranomaly"
         "num_clusters": int(cluster_centres_rgb.shape[0]),
         "num_confusable_pairs": len(pairs),
         "confusable_pairs": pairs
+    }
+@app.post("/classify-memory-colours/{session_id}")
+async def memory_colour_endpoint(session_id: str):
+    centres_path = RESULTS_DIR / f"{session_id}_cluster_centres.npy"
+    if not centres_path.exists():
+        raise HTTPException(status_code=404, detail="Run clustering first (/cluster/{session_id}).")
+
+    cluster_centres_rgb = np.load(centres_path)
+    labels = classify_memory_colours(cluster_centres_rgb)
+
+    return {
+        "session_id": session_id,
+        "cluster_centres_rgb": cluster_centres_rgb.tolist(),
+        "memory_colour_labels": labels
+    }
+@app.post("/remap/{session_id}")
+async def remap_endpoint(
+    session_id: str,
+    cvd_type: str = "deuteranomaly",
+    severity: int = 100,
+    target_delta_e: float = 12.0,
+):
+    original_path = RESULTS_DIR / f"{session_id}_original.png"
+    centres_path = RESULTS_DIR / f"{session_id}_cluster_centres.npy"
+    labels_path = RESULTS_DIR / f"{session_id}_pixel_labels.npy"
+
+    if not (original_path.exists() and centres_path.exists() and labels_path.exists()):
+        raise HTTPException(status_code=404, detail="Run upload, then clustering first.")
+
+    img_bgr = cv2.imread(str(original_path))
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    cluster_centres_rgb = np.load(centres_path)
+    pixel_labels = np.load(labels_path)
+
+    from app.modules.pair_detection import detect_confusable_pairs
+    from app.modules.memory_colour import classify_memory_colours
+
+    pairs = detect_confusable_pairs(cluster_centres_rgb, cvd_type, severity)
+    memory_labels = classify_memory_colours(cluster_centres_rgb)
+
+    shifts = compute_cluster_shifts(cluster_centres_rgb, pairs, memory_labels, cvd_type, severity, target_delta_e=target_delta_e)
+    remapped_rgb = apply_shifts_to_image(img_rgb, pixel_labels, shifts)
+
+    save_path = RESULTS_DIR / f"{session_id}_remapped.png"
+    remapped_bgr = cv2.cvtColor(remapped_rgb, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(str(save_path), remapped_bgr)
+
+    return {
+        "session_id": session_id,
+        "num_pairs_fixed": len(pairs),
+        "num_protected_pairs": sum(
+            1 for p in pairs if memory_labels[p["index_a"]] != "other" or memory_labels[p["index_b"]] != "other"
+        ),
+        "message": "Remapping complete"
     }
